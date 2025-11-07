@@ -55,6 +55,11 @@ func (m *DNFManager) GetPackages() []models.Package {
 		m.logger.WithField("count", len(installedPackages)).Debug("Found installed packages")
 	}
 
+	// Get security updates first to identify which packages are security updates
+	m.logger.Debug("Getting security updates...")
+	securityPackages := m.getSecurityPackages(packageManager)
+	m.logger.WithField("count", len(securityPackages)).Debug("Found security packages")
+
 	// Get upgradable packages
 	m.logger.Debug("Getting upgradable packages...")
 	checkCmd := exec.Command(packageManager, "check-update")
@@ -63,7 +68,7 @@ func (m *DNFManager) GetPackages() []models.Package {
 	var upgradablePackages []models.Package
 	if len(checkOutput) > 0 {
 		m.logger.Debug("Parsing DNF/yum check-update output...")
-		upgradablePackages = m.parseUpgradablePackages(string(checkOutput), packageManager, installedPackages)
+		upgradablePackages = m.parseUpgradablePackages(string(checkOutput), packageManager, installedPackages, securityPackages)
 		m.logger.WithField("count", len(upgradablePackages)).Debug("Found upgradable packages")
 	} else {
 		m.logger.Debug("No updates available")
@@ -77,8 +82,98 @@ func (m *DNFManager) GetPackages() []models.Package {
 	return packages
 }
 
+// getSecurityPackages gets the list of security packages from dnf/yum updateinfo
+func (m *DNFManager) getSecurityPackages(packageManager string) map[string]bool {
+	securityPackages := make(map[string]bool)
+
+	// Try dnf updateinfo list security (works for dnf)
+	updateInfoCmd := exec.Command(packageManager, "updateinfo", "list", "security")
+	updateInfoOutput, err := updateInfoCmd.Output()
+	if err != nil {
+		// Fall back to "sec" if "security" doesn't work
+		updateInfoCmd = exec.Command(packageManager, "updateinfo", "list", "sec")
+		updateInfoOutput, err = updateInfoCmd.Output()
+	}
+
+	if err != nil {
+		m.logger.WithError(err).Debug("Failed to get security updates, will not mark packages as security updates")
+		return securityPackages
+	}
+
+	// Parse the output to extract package names
+	scanner := bufio.NewScanner(strings.NewReader(string(updateInfoOutput)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip header lines and empty lines
+		if line == "" || strings.Contains(line, "Last metadata") || 
+			strings.Contains(line, "expiration") || strings.HasPrefix(line, "Loading") {
+			continue
+		}
+
+		// Format: ALSA-2025:11140 Moderate/Sec.  glib2-2.68.4-16.el9_6.2.x86_64
+		// We need to extract the package name (3rd field) and get the base name
+		fields := slices.Collect(strings.FieldsSeq(line))
+		if len(fields) < 3 {
+			continue
+		}
+
+		// Skip lines that don't start with ALSA/RHSA (advisory IDs)
+		// This filters out header lines like "expiration"
+		if !strings.HasPrefix(fields[0], "ALSA") && !strings.HasPrefix(fields[0], "RHSA") {
+			continue
+		}
+
+		// The package name is in the format: package-name-version-release.arch
+		// We need to extract just the base package name
+		packageNameWithVersion := fields[2]
+		basePackageName := m.extractBasePackageName(packageNameWithVersion)
+		
+		if basePackageName != "" {
+			securityPackages[basePackageName] = true
+		}
+	}
+
+	return securityPackages
+}
+
+// extractBasePackageName extracts the base package name from a package string
+// Handles formats like:
+// - package-name-version-release.arch (from updateinfo)
+// - package-name.arch (from check-update)
+func (m *DNFManager) extractBasePackageName(packageString string) string {
+	// Remove architecture suffix first (e.g., .x86_64, .noarch)
+	baseName := packageString
+	if idx := strings.LastIndex(packageString, "."); idx > 0 {
+		archSuffix := packageString[idx+1:]
+		// Check if it's a known architecture
+		if archSuffix == "x86_64" || archSuffix == "i686" || archSuffix == "i386" || 
+			archSuffix == "noarch" || archSuffix == "aarch64" || archSuffix == "arm64" {
+			baseName = packageString[:idx]
+		}
+	}
+
+	// If the base name contains a version pattern (starts with a digit after a dash),
+	// extract just the package name part
+	// Format: package-name-version-release
+	// We look for the FIRST dash that's followed by a digit (version starts)
+	// This handles packages with dashes in their names like "glibc-common-2.34-168.el9_6.19"
+	for i := 0; i < len(baseName); i++ {
+		if baseName[i] == '-' && i+1 < len(baseName) {
+			nextChar := baseName[i+1]
+			// Check if the next character is a digit (version starts)
+			if nextChar >= '0' && nextChar <= '9' {
+				// This is the start of version, return everything before this dash
+				return baseName[:i]
+			}
+		}
+	}
+
+	return baseName
+}
+
 // parseUpgradablePackages parses dnf/yum check-update output
-func (m *DNFManager) parseUpgradablePackages(output string, packageManager string, installedPackages map[string]string) []models.Package {
+func (m *DNFManager) parseUpgradablePackages(output string, packageManager string, installedPackages map[string]string, securityPackages map[string]bool) []models.Package {
 	var packages []models.Package
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
@@ -98,7 +193,6 @@ func (m *DNFManager) parseUpgradablePackages(output string, packageManager strin
 
 		packageName := fields[0]
 		availableVersion := fields[1]
-		repo := fields[2]
 
 		// Get current version from installed packages map (already collected)
 		// Try exact match first
@@ -162,7 +256,9 @@ func (m *DNFManager) parseUpgradablePackages(output string, packageManager strin
 		// Only add package if we have both current and available versions
 		// This prevents empty currentVersion errors on the server
 		if packageName != "" && currentVersion != "" && availableVersion != "" {
-			isSecurityUpdate := strings.Contains(strings.ToLower(repo), "security")
+			// Extract base package name to check against security packages
+			basePackageName := m.extractBasePackageName(packageName)
+			isSecurityUpdate := securityPackages[basePackageName]
 
 			packages = append(packages, models.Package{
 				Name:             packageName,
