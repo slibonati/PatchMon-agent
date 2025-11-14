@@ -57,6 +57,19 @@ func init() {
 	rootCmd.AddCommand(updateAgentCmd)
 	rootCmd.AddCommand(diagnosticsCmd)
 	rootCmd.AddCommand(uninstallCmd)
+	rootCmd.AddCommand(ansiblePlaybookCmd)
+
+	// Add ansible-playbook flag for --ansible-playbook syntax
+	rootCmd.PersistentFlags().String("ansible-playbook", "", "Execute an Ansible playbook")
+
+	// Handle --ansible-playbook flag at root level
+	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if playbookPath, _ := cmd.Flags().GetString("ansible-playbook"); playbookPath != "" {
+			return runAnsiblePlaybook(playbookPath)
+		}
+		// If no flag and no subcommand, show help
+		return cmd.Help()
+	}
 }
 
 // initialiseAgent initialises the configuration manager and logger
@@ -131,4 +144,3 @@ func checkRoot() error {
 	}
 	return nil
 }
-
