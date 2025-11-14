@@ -65,11 +65,22 @@ func init() {
 	// Handle --ansible-playbook flag at root level
 	rootCmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if playbookPath, _ := cmd.Flags().GetString("ansible-playbook"); playbookPath != "" {
-			return runAnsiblePlaybook(playbookPath)
+			// Parse extra vars for root flag usage
+			extraVarsArray, _ := cmd.Flags().GetStringArray("extra-vars")
+			extraVarsJSON, _ := cmd.Flags().GetString("extra-vars-json")
+			extraVars, err := parseExtraVars(extraVarsArray, extraVarsJSON)
+			if err != nil {
+				return fmt.Errorf("failed to parse extra vars: %w", err)
+			}
+			return runAnsiblePlaybook(playbookPath, extraVars)
 		}
 		// If no flag and no subcommand, show help
 		return cmd.Help()
 	}
+	
+	// Add extra-vars flags to root for --ansible-playbook usage
+	rootCmd.PersistentFlags().StringArrayP("extra-vars", "e", []string{}, "Extra variables as key=value pairs (can be specified multiple times)")
+	rootCmd.PersistentFlags().String("extra-vars-json", "", "Extra variables as JSON string")
 }
 
 // initialiseAgent initialises the configuration manager and logger
