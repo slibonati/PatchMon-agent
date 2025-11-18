@@ -3,6 +3,8 @@ package system
 import (
 	"os"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -104,21 +106,89 @@ func (d *Detector) getLatestKernelFromBoot() string {
 		return ""
 	}
 
-	var latestVersion string
+	var kernels []string
 	for _, entry := range entries {
 		name := entry.Name()
 		// Look for vmlinuz-* files
 		if strings.HasPrefix(name, "vmlinuz-") {
 			version := strings.TrimPrefix(name, "vmlinuz-")
-			// Skip generic/recovery kernels if we already have a version
-			if latestVersion != "" && (strings.Contains(version, "generic") || strings.Contains(version, "recovery")) {
+			// Skip generic/recovery kernels
+			if strings.Contains(version, "generic") || strings.Contains(version, "recovery") {
 				continue
 			}
-			latestVersion = version
+			kernels = append(kernels, version)
 		}
 	}
 
-	return latestVersion
+	if len(kernels) == 0 {
+		return ""
+	}
+
+	// Sort kernels by version and return the latest
+	sort.Slice(kernels, func(i, j int) bool {
+		return compareKernelVersions(kernels[i], kernels[j]) < 0
+	})
+
+	return kernels[len(kernels)-1]
+}
+
+// compareKernelVersions compares two kernel version strings
+// Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+// Handles formats like "6.14.11-2-pve" and "6.8.12-9-pve"
+func compareKernelVersions(v1, v2 string) int {
+	// Split version into parts: "6.14.11-2-pve" -> ["6", "14", "11", "2", "pve"]
+	parts1 := parseKernelVersion(v1)
+	parts2 := parseKernelVersion(v2)
+
+	// Compare each part
+	maxLen := len(parts1)
+	if len(parts2) > maxLen {
+		maxLen = len(parts2)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var p1, p2 string
+		if i < len(parts1) {
+			p1 = parts1[i]
+		}
+		if i < len(parts2) {
+			p2 = parts2[i]
+		}
+
+		// Try to compare as numbers first
+		n1, err1 := strconv.Atoi(p1)
+		n2, err2 := strconv.Atoi(p2)
+
+		if err1 == nil && err2 == nil {
+			// Both are numbers
+			if n1 < n2 {
+				return -1
+			}
+			if n1 > n2 {
+				return 1
+			}
+		} else {
+			// At least one is not a number, compare as strings
+			if p1 < p2 {
+				return -1
+			}
+			if p1 > p2 {
+				return 1
+			}
+		}
+	}
+
+	return 0
+}
+
+// parseKernelVersion parses a kernel version string into comparable parts
+// "6.14.11-2-pve" -> ["6", "14", "11", "2", "pve"]
+func parseKernelVersion(version string) []string {
+	// Replace dots and dashes with spaces, then split
+	version = strings.ReplaceAll(version, ".", " ")
+	version = strings.ReplaceAll(version, "-", " ")
+	parts := strings.Fields(version)
+	return parts
 }
 
 // getLatestKernelFromRPM queries RPM for installed kernel packages
