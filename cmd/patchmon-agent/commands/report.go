@@ -205,7 +205,9 @@ func sendReport(outputJson bool) error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal JSON: %w", err)
 		}
-		fmt.Fprintf(os.Stdout, "%s\n", jsonData)
+		if _, err := fmt.Fprintf(os.Stdout, "%s\n", jsonData); err != nil {
+			return fmt.Errorf("failed to write JSON output: %w", err)
+		}
 		return nil
 	}
 

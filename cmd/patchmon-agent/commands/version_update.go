@@ -494,58 +494,6 @@ func cleanupOldBackups(executablePath string) {
 	}
 }
 
-// verifyRunningBinaryVersion checks if the running process is using the expected binary version
-func verifyRunningBinaryVersion(executablePath, expectedVersion string) error {
-	// Get the process ID of the running patchmon-agent
-	// We'll check the binary path of the running process
-	pidCmd := exec.Command("pgrep", "-f", "patchmon-agent")
-	pidOutput, err := pidCmd.Output()
-	if err != nil {
-		return fmt.Errorf("could not find running process: %w", err)
-	}
-
-	pids := strings.Fields(strings.TrimSpace(string(pidOutput)))
-	if len(pids) == 0 {
-		return fmt.Errorf("no patchmon-agent process found")
-	}
-
-	// Check the first PID (main process)
-	pid := pids[0]
-
-	// On Linux, check /proc/PID/exe to see what binary is actually running
-	procExe := fmt.Sprintf("/proc/%s/exe", pid)
-	actualPath, err := os.Readlink(procExe)
-	if err != nil {
-		// Fallback: try to get version from running process
-		versionCmd := exec.Command("sh", "-c", fmt.Sprintf("cat /proc/%s/cmdline | tr '\\0' ' '", pid))
-		cmdline, _ := versionCmd.Output()
-		logger.WithField("cmdline", string(cmdline)).Debug("Could not read process exe link, using cmdline")
-		return nil // Non-critical, don't fail
-	}
-
-	// Resolve symlinks to compare actual paths
-	resolvedActual, err := filepath.EvalSymlinks(actualPath)
-	if err != nil {
-		resolvedActual = actualPath
-	}
-
-	resolvedExpected, err := filepath.EvalSymlinks(executablePath)
-	if err != nil {
-		resolvedExpected = executablePath
-	}
-
-	if resolvedActual != resolvedExpected {
-		logger.WithFields(map[string]interface{}{
-			"expected": resolvedExpected,
-			"actual":   resolvedActual,
-		}).Warn("Running process binary path does not match expected path")
-		return fmt.Errorf("binary path mismatch: expected %s, got %s", resolvedExpected, resolvedActual)
-	}
-
-	logger.Debug("Verified running process is using correct binary")
-	return nil
-}
-
 // checkRecentUpdate checks if we updated recently to prevent update loops
 func checkRecentUpdate() error {
 	updateMarkerPath := "/etc/patchmon/.last_update_timestamp"
