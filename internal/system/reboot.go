@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,10 @@ import (
 // CheckRebootRequired checks if the system requires a reboot
 // Returns (needsReboot bool, reason string)
 func (d *Detector) CheckRebootRequired() (bool, string) {
+	if runtime.GOOS == "windows" {
+		return d.checkWindowsRebootRequired()
+	}
+
 	runningKernel := d.getRunningKernel()
 	latestKernel := d.getLatestInstalledKernel()
 
@@ -48,6 +53,29 @@ func (d *Detector) CheckRebootRequired() (bool, string) {
 	return false, ""
 }
 
+// checkWindowsRebootRequired checks if Windows requires a reboot using PowerShell
+func (d *Detector) checkWindowsRebootRequired() (bool, string) {
+	// PowerShell command to check for pending reboot
+	// Checks registry keys that indicate reboot is needed
+	psCmd := `$rebootPending = $false; $reasons = @(); if ((Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name "PendingFileRenameOperations" -ErrorAction SilentlyContinue).PendingFileRenameOperations) { $rebootPending = $true; $reasons += "Pending file rename operations" }; if ((Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -ErrorAction SilentlyContinue)) { $rebootPending = $true; $reasons += "Windows Update requires reboot" }; if ((Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName" -ErrorAction SilentlyContinue).ComputerName -ne (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName" -ErrorAction SilentlyContinue).ComputerName) { $rebootPending = $true; $reasons += "Computer name change pending" }; if ($rebootPending) { Write-Output ($reasons -join "; ") } else { Write-Output "" }`
+
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
+	output, err := cmd.Output()
+	if err != nil {
+		d.logger.WithError(err).Debug("Failed to check Windows reboot status")
+		return false, ""
+	}
+
+	reason := strings.TrimSpace(string(output))
+	if reason != "" {
+		d.logger.WithField("reason", reason).Debug("Windows reboot required")
+		return true, reason
+	}
+
+	d.logger.Debug("No Windows reboot required")
+	return false, ""
+}
+
 // checkNeedsRestarting checks using needs-restarting command (RHEL/Fedora)
 func (d *Detector) checkNeedsRestarting() (bool, string) {
 	// Check if needs-restarting command exists
@@ -70,6 +98,11 @@ func (d *Detector) checkNeedsRestarting() (bool, string) {
 
 // getRunningKernel gets the currently running kernel version
 func (d *Detector) getRunningKernel() string {
+	if runtime.GOOS == "windows" {
+		// On Windows, return empty string - we don't track kernel versions the same way
+		return ""
+	}
+
 	cmd := exec.Command("uname", "-r")
 	output, err := cmd.Output()
 	if err != nil {
@@ -86,6 +119,11 @@ func (d *Detector) GetLatestInstalledKernel() string {
 
 // getLatestInstalledKernel gets the latest installed kernel version
 func (d *Detector) getLatestInstalledKernel() string {
+	if runtime.GOOS == "windows" {
+		// On Windows, return empty string - we don't track kernel versions the same way
+		return ""
+	}
+
 	// Try different methods based on common distro patterns
 
 	// Method 1: Debian/Ubuntu - check /boot for vmlinuz files
